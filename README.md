@@ -2,6 +2,8 @@
 
 A complete local React + Vite frontend and FastAPI backend based on the supplied SkillWallet activities. Eight workflows, SQLite report history, JSON export, print-to-PDF, image validation, structured AI outputs, optional architectural concept generation, and an explicit no-key demo mode.
 
+Cloud deployment: [Deploy on Render](https://render.com/deploy?repo=https://github.com/ikshitjain/ConstructAI). See [DEPLOY.md](DEPLOY.md) for the free demo configuration and storage limits.
+
 ## Sabse aasaan tareeka (Windows)
 
 1. ZIP extract karein.

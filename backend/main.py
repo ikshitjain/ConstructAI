@@ -6,6 +6,7 @@ import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -13,7 +14,7 @@ from urllib.parse import quote
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
@@ -36,8 +37,29 @@ def database():
 
 with database() as db:
     db.execute('CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, created TEXT, feature TEXT, input TEXT, output TEXT)')
+    db.execute('CREATE TABLE IF NOT EXISTS report_owners (report_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)')
 
 app = FastAPI(title='ConstructAI', version='1.0.0')
+SESSION = ContextVar('construct_session', default='local')
+
+@app.middleware('http')
+async def visitor_session(request: Request, call_next):
+    if os.getenv('PUBLIC_DEMO') != '1':
+        return await call_next(request)
+    session = request.cookies.get('construct_session', '')
+    valid = len(session) == 32 and all(c in '0123456789abcdef' for c in session)
+    if not valid:
+        session = uuid.uuid4().hex
+    token = SESSION.set(session)
+    try:
+        response = await call_next(request)
+        if not valid:
+            response.set_cookie('construct_session', session, httponly=True,
+                secure=request.url.scheme == 'https', samesite='lax', max_age=604800)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    finally:
+        SESSION.reset(token)
 
 class Input(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid', allow_inf_nan=False)
@@ -197,6 +219,7 @@ async def run(feature, data, image=None):
     output.update(id=uuid.uuid4().hex, mode=mode, feature=feature, created=datetime.now(timezone.utc).isoformat())
     with database() as db:
         db.execute('INSERT INTO reports VALUES (?,?,?,?,?)',(output['id'],output['created'],feature,json.dumps(data),json.dumps(output)))
+        db.execute('INSERT INTO report_owners VALUES (?,?)', (output['id'], SESSION.get()))
     return output
 
 @app.get('/api/health')
@@ -206,13 +229,21 @@ def health():
 @app.get('/api/history')
 def history():
     with database() as db:
-        rows=db.execute('SELECT output FROM reports ORDER BY created DESC LIMIT 100').fetchall()
+        if os.getenv('PUBLIC_DEMO') == '1':
+            rows=db.execute('SELECT r.output FROM reports r JOIN report_owners o ON r.id=o.report_id WHERE o.session_id=? ORDER BY r.created DESC LIMIT 100', (SESSION.get(),)).fetchall()
+        else:
+            rows=db.execute('SELECT output FROM reports ORDER BY created DESC LIMIT 100').fetchall()
     return [json.loads(row[0]) for row in rows]
 
 @app.delete('/api/history/{report_id}')
 def delete_report(report_id:str):
     with database() as db:
-        cursor=db.execute('DELETE FROM reports WHERE id=?',(report_id,))
+        if os.getenv('PUBLIC_DEMO') == '1':
+            cursor=db.execute('DELETE FROM reports WHERE id=? AND id IN (SELECT report_id FROM report_owners WHERE session_id=?)',(report_id,SESSION.get()))
+        else:
+            cursor=db.execute('DELETE FROM reports WHERE id=?',(report_id,))
+        if cursor.rowcount:
+            db.execute('DELETE FROM report_owners WHERE report_id=?', (report_id,))
     if not cursor.rowcount: raise HTTPException(404,'Report not found')
     return {'deleted':True}
 

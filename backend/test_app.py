@@ -75,6 +75,16 @@ class AppTests(unittest.TestCase):
     def test_image_key_required(self):
         self.assertEqual(self.client.post('/api/visualization',json={'prompt':'Modern residential building'}).status_code,503)
 
+    def test_public_visitors_have_separate_history(self):
+        with patch.dict(os.environ, {'PUBLIC_DEMO': '1'}):
+            first=TestClient(main.app)
+            second=TestClient(main.app)
+            r=first.post('/api/chatbot',json={'query':'Private visitor worksheet'}).json()
+            self.assertTrue(any(item['id']==r['id'] for item in first.get('/api/history').json()))
+            self.assertFalse(any(item['id']==r['id'] for item in second.get('/api/history').json()))
+            self.assertEqual(second.delete('/api/history/'+r['id']).status_code,404)
+            self.assertEqual(first.delete('/api/history/'+r['id']).status_code,200)
+
     def fake_client(self,content,status=200):
         class Client:
             async def __aenter__(self): return self
